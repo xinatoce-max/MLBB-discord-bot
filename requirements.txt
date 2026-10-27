@@ -1,4 +1,3 @@
 discord.py
 feedparser
-selenium
-webdriver-manager
+reguests
