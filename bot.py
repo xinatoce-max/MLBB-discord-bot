@@ -2,6 +2,7 @@ import os
 import discord
 from discord.ext import commands, tasks
 import feedparser
+import requests
 
 # --- НАСТРОЙКИ БОТА ---
 TOKEN = os.getenv('TOKEN')
@@ -12,6 +13,11 @@ YT_CHANNEL_ID = 1562741211981283350
 # Настройки YouTube (канал TurtleLight)
 YOUTUBE_CHANNEL_ID = 'UCEjpJz-JIzzaO0KMF8HgAew'
 RSS_URL = f'https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}'
+
+# Заголовки, чтобы YouTube не блокировал запросы с сервера Render
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -24,6 +30,16 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен и готов к работе!')
     check_youtube_channel.start()
 
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ЗАПРОСА RSS ---
+def get_youtube_feed():
+    try:
+        response = requests.get(RSS_URL, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            return feedparser.parse(response.content)
+    except Exception as e:
+        print(f"Ошибка при скачивании RSS: {e}")
+    return None
+
 # --- МОДУЛЬ: Автоматическая проверка YouTube каждые 10 минут ---
 @tasks.loop(minutes=10)
 async def check_youtube_channel():
@@ -33,8 +49,8 @@ async def check_youtube_channel():
         return
 
     try:
-        feed = feedparser.parse(RSS_URL)
-        if feed.entries:
+        feed = get_youtube_feed()
+        if feed and feed.entries:
             latest_video = feed.entries[0]
             video_id = latest_video.yt_videoid
             video_url = latest_video.link
@@ -78,13 +94,13 @@ async def check_youtube_channel():
                 last_video_id = video_id
 
     except Exception as e:
-        print(f"Ошибка при проверке YouTube: {e}")
+        print(f"Ошибка при обработке ленты YouTube: {e}")
 
 # --- КОМАНДА ДЛЯ РУЧНОЙ ПРОВЕРКИ ---
 @bot.command(name='check_yt')
 async def manual_check(ctx):
     global last_video_id
-    await ctx.send("🔄 Принудительно проверяю YouTube-канал и отправляю последнее видео...")
+    await ctx.send("🔄 Принудительно проверяю YouTube-канал через сервер...")
     
     channel = bot.get_channel(YT_CHANNEL_ID)
     if not channel:
@@ -92,8 +108,8 @@ async def manual_check(ctx):
         return
 
     try:
-        feed = feedparser.parse(RSS_URL)
-        if feed.entries:
+        feed = get_youtube_feed()
+        if feed and feed.entries:
             latest_video = feed.entries[0]
             video_id = latest_video.yt_videoid
             video_url = latest_video.link
@@ -124,10 +140,10 @@ async def manual_check(ctx):
             embed.set_footer(text="YouTube Notification", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
             await channel.send(embed=embed)
-            await ctx.send("✅ Готово! Красивое уведомление успешно отправлено в канал.")
+            await ctx.send("✅ Готово! Красивое уведомление успешно отправлено с сервера.")
             last_video_id = video_id
         else:
-            await ctx.send("⚠️ Не удалось найти видео в RSS-ленте YouTube.")
+            await ctx.send("⚠️ Не удалось получить ленту YouTube (сервер временно заблокирован по IP). Попробуйте через минуту.")
     except Exception as e:
         await ctx.send(f"❌ Произошла ошибка: {e}")
 
