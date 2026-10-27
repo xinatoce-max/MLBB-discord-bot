@@ -12,9 +12,12 @@ YT_CHANNEL_ID = 1562741211981283350
 
 # Настройки YouTube (канал TurtleLight)
 YOUTUBE_CHANNEL_ID = 'UCEjpJz-JIzzaO0KMF8HgAew'
-RSS_URL = f'https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}'
 
-# Заголовки, чтобы YouTube не блокировал запросы с сервера Render
+# Используем публичный прокси-агрегатор RSS, чтобы Render не блокировался YouTube
+RSS_URL = f'https://nitter.cz/proxy/https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}'
+# Или альтернативный вариант RSS-моста:
+ALT_RSS_URL = f'https://rsshub.app/youtube/channel/{YOUTUBE_CHANNEL_ID}'
+
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
@@ -30,14 +33,28 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен и готов к работе!')
     check_youtube_channel.start()
 
-# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ЗАПРОСА RSS ---
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ЗАПРОСА ЧЕРЕЗ ПРОКСИ ---
 def get_youtube_feed():
+    # Пробуем основной RSS-мост
     try:
         response = requests.get(RSS_URL, headers=HEADERS, timeout=10)
-        if response.status_code == 200:
-            return feedparser.parse(response.content)
+        if response.status_code == 200 and 'entries' in feedparser.parse(response.content):
+            feed = feedparser.parse(response.content)
+            if feed.entries:
+                return feed
     except Exception as e:
-        print(f"Ошибка при скачивании RSS: {e}")
+        print(f"Ошибка основного RSS: {e}")
+
+    # Если не получилось, пробуем запасной вариант
+    try:
+        response = requests.get(ALT_RSS_URL, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            feed = feedparser.parse(response.content)
+            if feed.entries:
+                return feed
+    except Exception as e:
+        print(f"Ошибка запасного RSS: {e}")
+
     return None
 
 # --- МОДУЛЬ: Автоматическая проверка YouTube каждые 10 минут ---
@@ -52,7 +69,8 @@ async def check_youtube_channel():
         feed = get_youtube_feed()
         if feed and feed.entries:
             latest_video = feed.entries[0]
-            video_id = latest_video.yt_videoid
+            # У разных RSS-форматов поле ID может называться по-разному
+            video_id = getattr(latest_video, 'yt_videoid', latest_video.link.split('v=')[-1])
             video_url = latest_video.link
             video_title = latest_video.title
             
@@ -100,7 +118,7 @@ async def check_youtube_channel():
 @bot.command(name='check_yt')
 async def manual_check(ctx):
     global last_video_id
-    await ctx.send("🔄 Принудительно проверяю YouTube-канал через сервер...")
+    await ctx.send("🔄 Проверяю YouTube-канал через защищенный прокси...")
     
     channel = bot.get_channel(YT_CHANNEL_ID)
     if not channel:
@@ -111,7 +129,7 @@ async def manual_check(ctx):
         feed = get_youtube_feed()
         if feed and feed.entries:
             latest_video = feed.entries[0]
-            video_id = latest_video.yt_videoid
+            video_id = getattr(latest_video, 'yt_videoid', latest_video.link.split('v=')[-1])
             video_url = latest_video.link
             video_title = latest_video.title
             
@@ -140,10 +158,10 @@ async def manual_check(ctx):
             embed.set_footer(text="YouTube Notification", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
             await channel.send(embed=embed)
-            await ctx.send("✅ Готово! Красивое уведомление успешно отправлено с сервера.")
+            await ctx.send("✅ Готово! Уведомление успешно доставлено.")
             last_video_id = video_id
         else:
-            await ctx.send("⚠️ Не удалось получить ленту YouTube (сервер временно заблокирован по IP). Попробуйте через минуту.")
+            await ctx.send("⚠️ Не удалось получить данные через прокси. Попробуйте еще раз через минуту.")
     except Exception as e:
         await ctx.send(f"❌ Произошла ошибка: {e}")
 
