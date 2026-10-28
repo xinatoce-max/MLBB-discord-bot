@@ -1,7 +1,25 @@
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
 from discord.ext import commands, tasks
 import requests
+
+# --- МИНИ-СЕРВЕР ДЛЯ RENDER (чтобы не было ошибки Timed Out) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# Запускаем веб-сервер в отдельном потоке, чтобы он занимал порт Render
+threading.Thread(target=run_web_server, daemon=True).start()
+
 
 # --- НАСТРОЙКИ БОТА ---
 TOKEN = os.getenv('TOKEN')
@@ -23,10 +41,9 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен и готов к работе!')
     check_youtube_channel.start()
 
-# --- ФУНКЦИЯ ПОЛУЧЕНИЯ ПОСЛЕДНЕГО ВИДЕО ЧЕРЕЗ HTML-ПАРСИНГ YOUTUBE ---
+# --- ФУНКЦИЯ ПОЛУЧЕНИЯ ПОСЛЕДНЕГО ВИДЕО С YOUTUBE ---
 def get_latest_video():
     try:
-        # Загружаем публичную страницу канала, которую YouTube никогда не блокирует для серверов
         url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/videos"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -36,16 +53,13 @@ def get_latest_video():
         
         if response.status_code == 200:
             html = response.text
-            # Ищем ID последнего видео прямо в коде страницы канала
             import re
             match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', html)
             title_match = re.search(r'"title":\{"runs":\[\{"text":"(.*?)"\}\]', html)
             
             if match:
                 video_id = match.group(1)
-                # Чистим заголовок от лишних кавычек если нашлось
                 video_title = title_match.group(1) if title_match else "Новое видео на канале!"
-                # Убираем экранирование юникода
                 video_title = video_title.encode().decode('unicode-escape', errors='ignore')
                 
                 return {
@@ -145,9 +159,10 @@ async def manual_check(ctx):
         embed.set_footer(text="YouTube Notification", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
         await channel.send(embed=embed)
-        await ctx.send("✅ Успешно! Последнее видео получено в обход RSS-ограничений.")
+        await ctx.send("✅ Успешно! Последнее видео получено.")
         last_video_id = video_id
     else:
         await ctx.send("⚠️ Не удалось подключиться к странице канала. Попробуйте через минуту.")
 
 bot.run(TOKEN)
+
