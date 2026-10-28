@@ -1,25 +1,8 @@
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import requests
-
-# --- МИНИ-СЕРВЕР ДЛЯ RENDER (чтобы не было ошибки Timed Out) ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive and running!")
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
-
-# Запускаем веб-сервер в отдельном потоке, чтобы он занимал порт Render
-threading.Thread(target=run_web_server, daemon=True).start()
-
+import asyncio
 
 # --- НАСТРОЙКИ БОТА ---
 TOKEN = os.getenv('TOKEN')
@@ -35,11 +18,6 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 last_video_id = None
-
-@bot.event
-async def on_ready():
-    print(f'Бот {bot.user} успешно запущен и готов к работе!')
-    check_youtube_channel.start()
 
 # --- ФУНКЦИЯ ПОЛУЧЕНИЯ ПОСЛЕДНЕГО ВИДЕО С YOUTUBE ---
 def get_latest_video():
@@ -71,60 +49,76 @@ def get_latest_video():
         print(f"Ошибка при получении данных с YouTube: {e}")
     return None
 
-# --- МОДУЛЬ: Автоматическая проверка каждые 10 минут ---
-@tasks.loop(minutes=10)
-async def check_youtube_channel():
+# --- ФОНОВЫЙ ЦИКЛ ПРОВЕРКИ (каждые 1-2 часа) ---
+async def youtube_background_checker():
     global last_video_id
-    channel = bot.get_channel(YT_CHANNEL_ID)
-    if not channel:
-        return
+    await bot.wait_until_ready()
+    
+    while not bot.is_closed():
+        try:
+            channel = bot.get_channel(YT_CHANNEL_ID)
+            if channel:
+                video_data = get_latest_video()
+                if video_data:
+                    video_id = video_data["id"]
+                    
+                    if last_video_id != video_id and last_video_id is not None:
+                        # АНТИСПАМ: Удаляем предыдущее сообщение бота перед отправкой нового
+                        async for message in channel.history(limit=15):
+                            if message.author == bot.user:
+                                try:
+                                    await message.delete()
+                                except Exception as e:
+                                    print(f"Не удалось удалить старое сообщение: {e}")
 
-    video_data = get_latest_video()
-    if video_data:
-        video_id = video_data["id"]
-        
-        if last_video_id != video_id:
-            # АНТИСПАМ: Удаляем предыдущее сообщение бота
-            async for message in channel.history(limit=15):
-                if message.author == bot.user:
-                    try:
-                        await message.delete()
-                    except Exception as e:
-                        print(f"Не удалось удалить старое сообщение: {e}")
+                        thumbnail_url = f'https://img.youtube.com/vi/{video_id}/hqdefault.jpg'
+                        channel_avatar_url = f"https://unavatar.io/youtube/{YOUTUBE_CHANNEL_ID}"
 
-            thumbnail_url = f'https://img.youtube.com/vi/{video_id}/hqdefault.jpg'
-            channel_avatar_url = f"https://unavatar.io/youtube/{YOUTUBE_CHANNEL_ID}"
+                        embed = discord.Embed(
+                            title=video_data["title"],
+                            url=video_data["url"],
+                            color=discord.Color.red()
+                        )
+                        
+                        embed.set_author(
+                            name="TurtleLight выпустил новое видео! 🎬", 
+                            icon_url=channel_avatar_url
+                        )
+                        
+                        embed.set_image(url=thumbnail_url)
+                        
+                        embed.add_field(
+                            name="📈 📉 Баффы и нерфы героев",
+                            value="Подробная информация расположена на: [mlbbhub.com/patch-notes](https://mlbbhub.com/patch-notes)",
+                            inline=False
+                        )
+                        
+                        embed.set_footer(text="YouTube Notification", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
-            embed = discord.Embed(
-                title=video_data["title"],
-                url=video_data["url"],
-                color=discord.Color.red()
-            )
-            
-            embed.set_author(
-                name="TurtleLight выпустил новое видео! 🎬", 
-                icon_url=channel_avatar_url
-            )
-            
-            embed.set_image(url=thumbnail_url)
-            
-            embed.add_field(
-                name="📈 📉 Баффы и нерфы героев",
-                value="Подробная информация расположена на: [mlbbhub.com/patch-notes](https://mlbbhub.com/patch-notes)",
-                inline=False
-            )
-            
-            embed.set_footer(text="YouTube Notification", icon_url=bot.user.avatar.url if bot.user.avatar else None)
+                        await channel.send(embed=embed)
+                        print(f"Опубликовано новое видео: {video_data['title']}")
+                    
+                    # Запоминаем текущее видео при первом запуске, чтобы не спамить старыми видео
+                    if last_video_id is None:
+                        last_video_id = video_id
+                        print(f"Инициализация: текущее видео ID {video_id} сохранено без отправки.")
 
-            await channel.send(embed=embed)
-            print(f"Опубликовано новое видео: {video_data['title']}")
-            last_video_id = video_id
+        except Exception as e:
+            print(f"Ошибка в фоновом цикле: {e}")
+
+        # Ждем 2 часа перед следующей проверкой (7200 секунд). Можете изменить на 3600 (1 час)
+        await asyncio.sleep(7200)
+
+@bot.event
+async def on_ready():
+    print(f'Бот {bot.user} запущен в режиме фонового воркера!')
+    bot.loop.create_task(youtube_background_checker())
 
 # --- КОМАНДА ДЛЯ РУЧНОЙ ПРОВЕРКИ ---
 @bot.command(name='check_yt')
 async def manual_check(ctx):
     global last_video_id
-    await ctx.send("🔄 Проверяю прямой доступ к YouTube с сервера...")
+    await ctx.send("🔄 Принудительно проверяю YouTube-канал...")
     
     channel = bot.get_channel(YT_CHANNEL_ID)
     if not channel:
@@ -159,10 +153,9 @@ async def manual_check(ctx):
         embed.set_footer(text="YouTube Notification", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
         await channel.send(embed=embed)
-        await ctx.send("✅ Успешно! Последнее видео получено.")
+        await ctx.send("✅ Готово! Последнее видео получено.")
         last_video_id = video_id
     else:
         await ctx.send("⚠️ Не удалось подключиться к странице канала. Попробуйте через минуту.")
 
 bot.run(TOKEN)
-
